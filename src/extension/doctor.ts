@@ -1,12 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { discoverAgentsAll, type AgentSource } from "../agents/agents.ts";
-import { isAsyncAvailable } from "../runs/background/async-execution.ts";
-import { diagnoseIntercomBridge, type IntercomBridgeDiagnostic } from "../intercom/intercom-bridge.ts";
 import { discoverAvailableSkills, type SkillSource } from "../agents/skills.ts";
 import {
-	ASYNC_DIR,
-	CHAIN_RUNS_DIR,
 	RESULTS_DIR,
 	TEMP_ROOT_DIR,
 	type ExtensionConfig,
@@ -15,27 +11,22 @@ import {
 
 interface DoctorPaths {
 	tempRootDir: string;
-	asyncDir: string;
 	resultsDir: string;
-	chainRunsDir: string;
 }
 
 interface DoctorDeps {
-	isAsyncAvailable: () => boolean;
 	discoverAgentsAll: typeof discoverAgentsAll;
 	discoverAvailableSkills: typeof discoverAvailableSkills;
-	diagnoseIntercomBridge: typeof diagnoseIntercomBridge;
 }
 
 interface DoctorReportInput {
 	cwd: string;
 	config: ExtensionConfig;
 	state: SubagentState;
-	context?: "fresh" | "fork";
+	context?: "fresh";
 	requestedSessionDir?: string;
 	currentSessionFile?: string | null;
 	currentSessionId?: string | null;
-	orchestratorTarget?: string;
 	sessionError?: string;
 	expandTilde?: (value: string) => string;
 	paths?: DoctorPaths;
@@ -44,16 +35,12 @@ interface DoctorReportInput {
 
 const DEFAULT_PATHS: DoctorPaths = {
 	tempRootDir: TEMP_ROOT_DIR,
-	asyncDir: ASYNC_DIR,
 	resultsDir: RESULTS_DIR,
-	chainRunsDir: CHAIN_RUNS_DIR,
 };
 
 const DEFAULT_DEPS: DoctorDeps = {
-	isAsyncAvailable,
 	discoverAgentsAll,
 	discoverAvailableSkills,
-	diagnoseIntercomBridge,
 };
 
 function errorText(error: unknown): string {
@@ -128,43 +115,20 @@ function formatSessionLines(input: DoctorReportInput): string[] {
 
 function formatDiscovery(input: DoctorReportInput, deps: DoctorDeps): string[] {
 	return [
-		lineFromCheck("agents/chains", () => {
+		lineFromCheck("agents", () => {
 			const discovered = deps.discoverAgentsAll(input.cwd);
 			const agentCounts = {
 				builtin: discovered.builtin.length,
 				user: discovered.user.length,
 				project: discovered.project.length,
 			};
-			const chainCounts = discovered.chains.reduce<Record<AgentSource, number>>((counts, chain) => {
-				counts[chain.source] += 1;
-				return counts;
-			}, { builtin: 0, user: 0, project: 0 });
-			return [
-				`- agents: total ${agentCounts.builtin + agentCounts.user + agentCounts.project} (${formatSourceCounts(agentCounts)})`,
-				`- chains: total ${discovered.chains.length} (${formatSourceCounts(chainCounts)})`,
-			].join("\n");
+			return `- agents: total ${agentCounts.builtin + agentCounts.user + agentCounts.project} (${formatSourceCounts(agentCounts)})`;
 		}),
 		lineFromCheck("skills", () => {
 			const skills = deps.discoverAvailableSkills(input.cwd);
 			return `- skills: total ${skills.length} (${formatSkillSourceCounts(skills)})`;
 		}),
 	];
-}
-
-function formatIntercomDiagnostic(diagnostic: IntercomBridgeDiagnostic, context: "fresh" | "fork" | undefined): string[] {
-	const lines = [
-		`- bridge: ${diagnostic.active ? "active" : "inactive"}${diagnostic.reason ? ` (${diagnostic.reason})` : ""}`,
-		`- mode: ${diagnostic.mode}; context: ${context ?? "unspecified"}`,
-		`- orchestrator target: ${diagnostic.orchestratorTarget ?? "not available"}`,
-		`- pi-intercom: ${diagnostic.piIntercomAvailable ? "available" : "unavailable"} at ${diagnostic.extensionDir}`,
-	];
-	if (diagnostic.configPath && diagnostic.intercomConfigEnabled !== undefined) {
-		lines.push(`- intercom config: ${diagnostic.intercomConfigEnabled === false ? "disabled" : "enabled or absent"} (${diagnostic.configPath})`);
-	}
-	if (diagnostic.intercomConfigError) {
-		lines.push(`- intercom config warning: ${diagnostic.intercomConfigError}; runtime assumes enabled`);
-	}
-	return lines;
 }
 
 export function buildDoctorReport(input: DoctorReportInput): string {
@@ -175,25 +139,14 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 		"",
 		"Runtime",
 		`- cwd: ${input.cwd}`,
-		lineFromCheck("async support", () => `- async support: ${deps.isAsyncAvailable() ? "available" : "unavailable"}`),
 		...formatSessionLines(input),
 		"",
 		"Filesystem",
 		formatExistingDirectory("temp root", paths.tempRootDir),
-		formatExistingDirectory("async runs", paths.asyncDir),
 		formatExistingDirectory("results", paths.resultsDir),
-		formatExistingDirectory("chain runs", paths.chainRunsDir),
 		"",
 		"Discovery",
 		...formatDiscovery(input, deps),
-		"",
-		"Intercom bridge",
-		...lineFromCheck("intercom bridge", () => formatIntercomDiagnostic(deps.diagnoseIntercomBridge({
-			config: input.config.intercomBridge,
-			context: input.context,
-			orchestratorTarget: input.orchestratorTarget,
-			cwd: input.cwd,
-		}), input.context).join("\n")).split("\n"),
 	];
 	return lines.join("\n");
 }

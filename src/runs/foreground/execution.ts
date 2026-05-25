@@ -15,27 +15,16 @@ import {
 import {
 	type AgentProgress,
 	type ArtifactPaths,
-	type ControlEvent,
 	type ModelAttempt,
 	type RunSyncOptions,
 	type SingleResult,
 	type Usage,
 	DEFAULT_MAX_OUTPUT,
-	INTERCOM_DETACH_REQUEST_EVENT,
-	INTERCOM_DETACH_RESPONSE_EVENT,
 	truncateOutput,
 	getSubagentDepthEnv,
 } from "../../shared/types.ts";
 import {
-	DEFAULT_CONTROL_CONFIG,
-	buildControlEvent,
-	claimControlNotification,
-	deriveActivityState,
-	shouldNotifyControlEvent,
-} from "../shared/subagent-control.ts";
-import {
 	getFinalOutput,
-	findLatestSessionFile,
 	detectSubagentError,
 	extractToolArgsPreview,
 	extractTextFromContent,
@@ -56,12 +45,10 @@ import {
 	createMutatingFailureState,
 	didMutatingToolFail,
 	isMutatingTool,
-	nextLongRunningTrigger,
 	recordMutatingFailure,
 	resetMutatingFailureState,
 	resolveCurrentPath,
 	shouldEscalateMutatingFailures,
-	summarizeRecentMutatingFailures,
 } from "../shared/long-running-guard.ts";
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
@@ -109,7 +96,6 @@ function snapshotResult(result: SingleResult, progress: AgentProgress): SingleRe
 				usage: attempt.usage ? { ...attempt.usage } : undefined,
 			}))
 			: undefined,
-		controlEvents: result.controlEvents ? result.controlEvents.map((event) => ({ ...event })) : undefined,
 		progress,
 		progressSummary: result.progressSummary ? { ...result.progressSummary } : undefined,
 		artifactPaths: result.artifactPaths ? { ...result.artifactPaths } : undefined,
@@ -153,15 +139,9 @@ async function runSingleAttempt(
 		mcpDirectTools: agent.mcpDirectTools,
 		cwd: options.cwd ?? runtimeCwd,
 		promptFileStem: agent.name,
-		intercomSessionName: options.intercomSessionName,
-		orchestratorIntercomTarget: options.orchestratorIntercomTarget,
 		runId: options.runId,
 		childAgentName: agent.name,
 		childIndex: options.index ?? 0,
-		parentEventSink: options.nestedRoute?.eventSink,
-		parentControlInbox: options.nestedRoute?.controlInbox,
-		parentRootRunId: options.nestedRoute?.rootRunId,
-		parentCapabilityToken: options.nestedRoute?.capabilityToken,
 	});
 
 	const result: SingleResult = {
@@ -176,19 +156,6 @@ async function runSingleAttempt(
 		skillsWarning: shared.skillsWarning,
 	};
 	const startTime = Date.now();
-	const controlConfig = options.controlConfig ?? DEFAULT_CONTROL_CONFIG;
-	let interruptedByControl = false;
-	const allControlEvents: ControlEvent[] = [];
-	let pendingControlEvents: ControlEvent[] = [];
-	const emittedControlEventKeys = new Set<string>();
-	const emitControlEvent = (event: ControlEvent) => {
-		if (!shouldNotifyControlEvent(controlConfig, event)) return;
-		if (!claimControlNotification(controlConfig, event, emittedControlEventKeys)) return;
-		allControlEvents.push(event);
-		pendingControlEvents.push(event);
-		options.onControlEvent?.(event);
-	};
-
 	const progress: AgentProgress = {
 		index: options.index ?? 0,
 		agent: agent.name,
@@ -218,28 +185,8 @@ async function runSingleAttempt(
 		let buf = "";
 		let processClosed = false;
 		let settled = false;
-		let detached = false;
-		let intercomStarted = false;
 		let assistantError: string | undefined;
 		let removeAbortListener: (() => void) | undefined;
-		let removeInterruptListener: (() => void) | undefined;
-		let activityTimer: NodeJS.Timeout | undefined;
-
-		const detachForIntercom = () => {
-			detached = true;
-			processClosed = true;
-			result.detached = true;
-			result.detachedReason = "intercom coordination";
-			progress.status = "detached";
-			progress.durationMs = Date.now() - startTime;
-			result.progressSummary = {
-				toolCount: progress.toolCount,
-				tokens: progress.tokens,
-				durationMs: progress.durationMs,
-			};
-			finish(-2);
-		};
-
 		// If the child emits a terminal assistant stop but never exits,
 		// give it a short grace period to flush naturally, then clean it up.
 		const FINAL_STOP_GRACE_MS = 1000;
@@ -260,9 +207,9 @@ async function runSingleAttempt(
 			}
 		};
 		const startFinalDrain = () => {
-			if (childExited || finalDrainTimer || settled || processClosed || detached) return;
+			if (childExited || finalDrainTimer || settled || processClosed) return;
 			finalDrainTimer = setTimeout(() => {
-				if (settled || processClosed || detached) return;
+				if (settled || processClosed) return;
 				const termSent = trySignalChild(proc, "SIGTERM");
 				if (!termSent) return;
 				forcedTerminationSignal = true;
@@ -270,7 +217,7 @@ async function runSingleAttempt(
 					result.error = result.error ?? `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its final message. Forcing termination.`;
 				}
 				finalHardKillTimer = setTimeout(() => {
-					if (settled || processClosed || detached) return;
+					if (settled || processClosed) return;
 					forcedTerminationSignal = trySignalChild(proc, "SIGKILL") || forcedTerminationSignal;
 				}, HARD_KILL_MS);
 				finalHardKillTimer.unref?.();
@@ -278,126 +225,27 @@ async function runSingleAttempt(
 			finalDrainTimer.unref?.();
 		};
 
-		const unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
-			if (!options.allowIntercomDetach || detached || processClosed || !intercomStarted) return;
-			if (!payload || typeof payload !== "object") return;
-			const requestId = (payload as { requestId?: unknown }).requestId;
-			if (typeof requestId !== "string" || requestId.length === 0) return;
-			options.intercomEvents?.emit(INTERCOM_DETACH_RESPONSE_EVENT, { requestId, accepted: true });
-			detachForIntercom();
-		});
-
 		const finish = (code: number) => {
 			if (settled) return;
 			settled = true;
 			clearFinalDrainTimers();
 			clearStdioGuard();
-			if (activityTimer) {
-				clearInterval(activityTimer);
-				activityTimer = undefined;
-			}
-			unsubscribeIntercomDetach?.();
 			removeAbortListener?.();
-			removeInterruptListener?.();
 			resolve(code);
 		};
 
-		const drainPendingControlEvents = (): ControlEvent[] | undefined => {
-			if (pendingControlEvents.length === 0) return undefined;
-			const events = pendingControlEvents;
-			pendingControlEvents = [];
-			return events;
-		};
-
-		let activeLongRunningNotified = false;
-		let pendingToolResult: { tool: string; path?: string; mutates: boolean; startedAt?: number } | undefined;
-		const mutatingFailures = createMutatingFailureState();
-		const mutatingFailureWindowMs = 5 * 60_000;
-		const currentToolDurationMs = (now: number) => progress.currentToolStartedAt ? Math.max(0, now - progress.currentToolStartedAt) : undefined;
-		const emitNeedsAttention = (now: number, input: { message?: string; reason?: ControlEvent["reason"]; recentFailureSummary?: string; currentTool?: string; currentPath?: string; currentToolDurationMs?: number } = {}): boolean => {
-			if (!controlConfig.enabled) return false;
-			const previous = progress.activityState;
-			progress.activityState = "needs_attention";
-			const event = buildControlEvent({
-				type: "needs_attention",
-				from: previous,
-				to: "needs_attention",
-				runId: options.runId,
-				agent: agent.name,
-				index: options.index,
-				ts: now,
-				lastActivityAt: progress.lastActivityAt,
-				message: input.message,
-				reason: input.reason ?? "idle",
-				turns: result.usage.turns,
-				tokens: progress.tokens,
-				toolCount: progress.toolCount,
-				currentTool: input.currentTool ?? progress.currentTool,
-				currentToolDurationMs: input.currentToolDurationMs ?? currentToolDurationMs(now),
-				currentPath: input.currentPath ?? progress.currentPath,
-				recentFailureSummary: input.recentFailureSummary,
-			});
-			emitControlEvent(event);
-			return previous !== "needs_attention";
-		};
-		const emitActiveLongRunning = (now: number, reason: ControlEvent["reason"]): boolean => {
-			if (!controlConfig.enabled || activeLongRunningNotified || progress.activityState === "needs_attention") return false;
-			activeLongRunningNotified = true;
-			const previous = progress.activityState;
-			progress.activityState = "active_long_running";
-			emitControlEvent(buildControlEvent({
-				type: "active_long_running",
-				from: previous,
-				to: "active_long_running",
-				runId: options.runId,
-				agent: agent.name,
-				index: options.index,
-				ts: now,
-				message: `${agent.name} is still active but long-running`,
-				reason,
-				turns: result.usage.turns,
-				tokens: progress.tokens,
-				toolCount: progress.toolCount,
-				currentTool: progress.currentTool,
-				currentToolDurationMs: currentToolDurationMs(now),
-				currentPath: progress.currentPath,
-				elapsedMs: now - startTime,
-			}));
-			return true;
-		};
-		const updateActivityState = (now: number): boolean => {
-			if (!controlConfig.enabled) return false;
-			const idleState = deriveActivityState({
-				config: controlConfig,
-				startedAt: startTime,
-				lastActivityAt: progress.lastActivityAt,
-				now,
-			});
-			if (idleState === "needs_attention") {
-				return progress.activityState === "needs_attention" ? false : emitNeedsAttention(now);
-			}
-			const activeReason = nextLongRunningTrigger(controlConfig, {
-				startedAt: startTime,
-				now,
-				turns: result.usage.turns,
-				tokens: progress.tokens,
-			});
-			return activeReason ? emitActiveLongRunning(now, activeReason) : false;
-		};
 
 
 		const emitUpdateSnapshot = (text: string) => {
 			if (!options.onUpdate || processClosed) return;
 			const progressSnapshot = snapshotProgress(progress);
 			const resultSnapshot = snapshotResult(result, progressSnapshot);
-			const controlEvents = drainPendingControlEvents();
 			options.onUpdate({
 				content: [{ type: "text", text }],
 				details: {
 					mode: "single",
 					results: [resultSnapshot],
 					progress: [progressSnapshot],
-					controlEvents,
 				},
 			});
 		};
@@ -422,15 +270,10 @@ async function runSingleAttempt(
 			const now = Date.now();
 			progress.durationMs = now - startTime;
 			progress.lastActivityAt = now;
-			updateActivityState(now);
-
 			if (evt.type === "tool_execution_start") {
 				const toolArgs = evt.args && typeof evt.args === "object" && !Array.isArray(evt.args)
 					? evt.args as Record<string, unknown>
 					: {};
-				if (options.allowIntercomDetach && (evt.toolName === "intercom" || evt.toolName === "contact_supervisor")) {
-					intercomStarted = true;
-				}
 				progress.toolCount++;
 				progress.currentTool = evt.toolName;
 				progress.currentToolArgs = extractToolArgsPreview(toolArgs);
@@ -485,7 +328,6 @@ async function runSingleAttempt(
 						startFinalDrain();
 					}
 				}
-				updateActivityState(now);
 				fireUpdate();
 			}
 
@@ -502,15 +344,8 @@ async function runSingleAttempt(
 						error: resultText.split("\n").find((line) => line.trim())?.trim().slice(0, 180) ?? "mutating tool failed",
 						ts: now,
 					}, mutatingFailureWindowMs);
-					if (shouldEscalateMutatingFailures(mutatingFailures, controlConfig.failedToolAttemptsBeforeAttention)) {
-						emitNeedsAttention(now, {
-							message: `${agent.name} needs attention after repeated mutating tool failures`,
-							reason: "tool_failures",
-							currentTool: toolSnapshot.tool,
-							currentPath: toolSnapshot.path,
-							currentToolDurationMs: toolSnapshot.startedAt ? Math.max(0, now - toolSnapshot.startedAt) : undefined,
-							recentFailureSummary: summarizeRecentMutatingFailures(mutatingFailures),
-						});
+					if (shouldEscalateMutatingFailures(mutatingFailures, 3)) {
+						progress.activityState = "needs_attention";
 					}
 				} else if (toolSnapshot?.mutates) {
 					resetMutatingFailureState(mutatingFailures);
@@ -519,17 +354,6 @@ async function runSingleAttempt(
 			}
 		};
 
-		if (controlConfig.enabled) {
-			activityTimer = setInterval(() => {
-				if (processClosed || settled || detached) return;
-				const now = Date.now();
-				if (updateActivityState(now)) {
-					progress.durationMs = now - startTime;
-					fireUpdate();
-				}
-			}, 1000);
-			activityTimer.unref?.();
-		}
 
 		let stderrBuf = "";
 
@@ -554,10 +378,6 @@ async function runSingleAttempt(
 				// JSONL artifact flush is best effort.
 			});
 			cleanupTempDir(tempDir);
-			if (detached) {
-				finish(-2);
-				return;
-			}
 			processClosed = true;
 			if (buf.trim()) processLine(buf);
 			if (!result.error && assistantError) result.error = assistantError;
@@ -583,11 +403,7 @@ async function runSingleAttempt(
 
 		if (options.signal) {
 			const kill = () => {
-				if (processClosed || detached) return;
-				if (options.allowIntercomDetach && intercomStarted && !detached) {
-					detachForIntercom();
-					return;
-				}
+				if (processClosed) return;
 				proc.kill("SIGTERM");
 				setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 3000);
 			};
@@ -597,52 +413,8 @@ async function runSingleAttempt(
 				removeAbortListener = () => options.signal?.removeEventListener("abort", kill);
 			}
 		}
-
-		if (options.interruptSignal) {
-			const interrupt = () => {
-				if (processClosed || detached || settled) return;
-				interruptedByControl = true;
-				progress.status = "running";
-				progress.durationMs = Date.now() - startTime;
-				result.interrupted = true;
-				result.finalOutput = "Interrupted. Waiting for explicit next action.";
-				progress.activityState = undefined;
-				fireUpdate();
-				trySignalChild(proc, "SIGINT");
-				setTimeout(() => {
-					if (settled || processClosed || detached) return;
-					trySignalChild(proc, "SIGTERM");
-				}, 1000).unref?.();
-			};
-			if (options.interruptSignal.aborted) interrupt();
-			else {
-				options.interruptSignal.addEventListener("abort", interrupt, { once: true });
-				removeInterruptListener = () => options.interruptSignal?.removeEventListener("abort", interrupt);
-			}
-		}
 	});
 	result.exitCode = exitCode;
-	if (interruptedByControl) {
-		result.exitCode = 0;
-		result.interrupted = true;
-		result.error = undefined;
-		result.finalOutput = result.finalOutput || "Interrupted. Waiting for explicit next action.";
-		result.controlEvents = allControlEvents.length ? allControlEvents : undefined;
-		progress.activityState = undefined;
-		progress.durationMs = Date.now() - startTime;
-		result.progressSummary = {
-			toolCount: progress.toolCount,
-			tokens: progress.tokens,
-			durationMs: progress.durationMs,
-		};
-		return result;
-	}
-	if (result.detached) {
-		result.exitCode = 0;
-		result.finalOutput = "Detached for intercom coordination.";
-		return result;
-	}
-
 	if (result.error && result.exitCode === 0) {
 		result.exitCode = 1;
 	}
@@ -686,16 +458,6 @@ async function runSingleAttempt(
 		result.error = "Subagent completed without making edits for an implementation task.\nIt appears to have returned planning or scratchpad output instead of applying changes.";
 		progress.status = "failed";
 		progress.error = result.error;
-		emitControlEvent(buildControlEvent({
-			from: progress.activityState,
-			to: "needs_attention",
-			runId: options.runId ?? agent.name,
-			agent: agent.name,
-			index: options.index,
-			ts: Date.now(),
-			message: `${agent.name} completed without making edits for an implementation task`,
-			reason: "completion_guard",
-		}));
 	}
 	if (options.outputPath && result.exitCode === 0) {
 		const resolvedOutput = resolveSingleOutput(options.outputPath, fullOutput, shared.outputSnapshot);
@@ -711,7 +473,6 @@ async function runSingleAttempt(
 	result.finalOutput = options.outputMode === "file-only" && result.savedOutputPath && result.outputReference
 		? result.outputReference.message
 		: fullOutput;
-	result.controlEvents = allControlEvents.length ? allControlEvents : undefined;
 	if (options.onUpdate) {
 		const finalText = result.finalOutput || result.error || "(no output)";
 		const progressSnapshot = snapshotProgress(progress);
@@ -722,7 +483,6 @@ async function runSingleAttempt(
 				mode: "single",
 				results: [resultSnapshot],
 				progress: [progressSnapshot],
-				controlEvents: allControlEvents.length ? allControlEvents : undefined,
 			},
 		});
 	}
@@ -763,8 +523,7 @@ export async function runSync(
 		};
 	}
 
-	const shareEnabled = options.share === true;
-	const sessionEnabled = Boolean(options.sessionFile || options.sessionDir) || shareEnabled;
+	const sessionEnabled = Boolean(options.sessionFile || options.sessionDir);
 	const skillNames = options.skills ?? agent.skills ?? [];
 	const skillCwd = options.cwd ?? runtimeCwd;
 	const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, skillCwd, runtimeCwd);
@@ -909,9 +668,6 @@ export async function runSync(
 
 	if (options.sessionFile && (existsSync(options.sessionFile) || result.messages?.length)) {
 		result.sessionFile = options.sessionFile;
-	} else if (shareEnabled && options.sessionDir) {
-		const sessionFile = findLatestSessionFile(options.sessionDir);
-		if (sessionFile) result.sessionFile = sessionFile;
 	}
 
 	return result;

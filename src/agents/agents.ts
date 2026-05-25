@@ -9,7 +9,6 @@ import { fileURLToPath } from "node:url";
 import type { OutputMode } from "../shared/types.ts";
 import { getAgentDir } from "../shared/utils.ts";
 import { KNOWN_FIELDS } from "./agent-serializer.ts";
-import { parseChain } from "./chain-serializer.ts";
 import { mergeAgentsForScope } from "./agent-selection.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
 import { buildRuntimeName, parsePackageName } from "./identity.ts";
@@ -19,7 +18,6 @@ export type AgentScope = "user" | "project" | "both";
 
 export type AgentSource = "builtin" | "user" | "project";
 type SystemPromptMode = "append" | "replace";
-export type AgentDefaultContext = "fresh" | "fork";
 
 export function defaultSystemPromptMode(name: string): SystemPromptMode {
 	return name === "delegate" ? "append" : "replace";
@@ -40,7 +38,6 @@ export interface BuiltinAgentOverrideBase {
 	systemPromptMode: SystemPromptMode;
 	inheritProjectContext: boolean;
 	inheritSkills: boolean;
-	defaultContext?: AgentDefaultContext;
 	disabled?: boolean;
 	systemPrompt: string;
 	skills?: string[];
@@ -56,7 +53,6 @@ interface BuiltinAgentOverrideConfig {
 	systemPromptMode?: SystemPromptMode;
 	inheritProjectContext?: boolean;
 	inheritSkills?: boolean;
-	defaultContext?: AgentDefaultContext | false;
 	disabled?: boolean;
 	systemPrompt?: string;
 	skills?: string[] | false;
@@ -83,7 +79,6 @@ export interface AgentConfig {
 	systemPromptMode: SystemPromptMode;
 	inheritProjectContext: boolean;
 	inheritSkills: boolean;
-	defaultContext?: AgentDefaultContext;
 	systemPrompt: string;
 	source: AgentSource;
 	filePath: string;
@@ -107,35 +102,9 @@ interface SubagentSettings {
 
 const EMPTY_SUBAGENT_SETTINGS: SubagentSettings = { overrides: {} };
 
-export interface ChainStepConfig {
-	agent: string;
-	task: string;
-	output?: string | false;
-	outputMode?: OutputMode;
-	reads?: string[] | false;
-	model?: string;
-	skills?: string[] | false;
-	progress?: boolean;
-}
-
-export interface ChainConfig {
-	name: string;
-	localName?: string;
-	packageName?: string;
-	description: string;
-	source: AgentSource;
-	filePath: string;
-	steps: ChainStepConfig[];
-	extraFields?: Record<string, string>;
-}
-
 interface AgentDiscoveryResult {
 	agents: AgentConfig[];
 	projectAgentsDir: string | null;
-}
-
-function getUserChainDir(): string {
-	return path.join(getAgentDir(), "chains");
 }
 
 function splitToolList(rawTools: string[] | undefined): { tools?: string[]; mcpDirectTools?: string[] } {
@@ -180,7 +149,6 @@ function cloneOverrideBase(agent: AgentConfig): BuiltinAgentOverrideBase {
 		systemPromptMode: agent.systemPromptMode,
 		inheritProjectContext: agent.inheritProjectContext,
 		inheritSkills: agent.inheritSkills,
-		defaultContext: agent.defaultContext,
 		disabled: agent.disabled,
 		systemPrompt: agent.systemPrompt,
 		skills: agent.skills ? [...agent.skills] : undefined,
@@ -200,7 +168,6 @@ function cloneOverrideValue(override: BuiltinAgentOverrideConfig): BuiltinAgentO
 		...(override.systemPromptMode !== undefined ? { systemPromptMode: override.systemPromptMode } : {}),
 		...(override.inheritProjectContext !== undefined ? { inheritProjectContext: override.inheritProjectContext } : {}),
 		...(override.inheritSkills !== undefined ? { inheritSkills: override.inheritSkills } : {}),
-		...(override.defaultContext !== undefined ? { defaultContext: override.defaultContext } : {}),
 		...(override.disabled !== undefined ? { disabled: override.disabled } : {}),
 		...(override.systemPrompt !== undefined ? { systemPrompt: override.systemPrompt } : {}),
 		...(override.skills !== undefined ? { skills: override.skills === false ? false : [...override.skills] } : {}),
@@ -326,14 +293,6 @@ function parseBuiltinOverrideEntry(
 		}
 	}
 
-	if ("defaultContext" in input) {
-		if (input.defaultContext === "fresh" || input.defaultContext === "fork" || input.defaultContext === false) {
-			override.defaultContext = input.defaultContext;
-		} else {
-			throw new Error(`Builtin override '${name}' in '${filePath}' has invalid 'defaultContext'; expected 'fresh', 'fork', or false.`);
-		}
-	}
-
 	if ("disabled" in input) {
 		if (typeof input.disabled === "boolean") {
 			override.disabled = input.disabled;
@@ -413,7 +372,6 @@ function applyBuiltinOverride(
 	if (override.systemPromptMode !== undefined) next.systemPromptMode = override.systemPromptMode;
 	if (override.inheritProjectContext !== undefined) next.inheritProjectContext = override.inheritProjectContext;
 	if (override.inheritSkills !== undefined) next.inheritSkills = override.inheritSkills;
-	if (override.defaultContext !== undefined) next.defaultContext = override.defaultContext === false ? undefined : override.defaultContext;
 	if (override.disabled !== undefined) next.disabled = override.disabled;
 	if (override.systemPrompt !== undefined) next.systemPrompt = override.systemPrompt;
 	if (override.skills !== undefined) next.skills = override.skills === false ? undefined : [...override.skills];
@@ -462,7 +420,7 @@ function applyBuiltinOverrides(
 
 export function buildBuiltinOverrideConfig(
 	base: BuiltinAgentOverrideBase,
-	draft: Pick<AgentConfig, "model" | "fallbackModels" | "thinking" | "systemPromptMode" | "inheritProjectContext" | "inheritSkills" | "defaultContext" | "disabled" | "systemPrompt" | "skills" | "tools" | "mcpDirectTools" | "completionGuard">,
+	draft: Pick<AgentConfig, "model" | "fallbackModels" | "thinking" | "systemPromptMode" | "inheritProjectContext" | "inheritSkills" | "disabled" | "systemPrompt" | "skills" | "tools" | "mcpDirectTools" | "completionGuard">,
 ): BuiltinAgentOverrideConfig | undefined {
 	const override: BuiltinAgentOverrideConfig = {};
 
@@ -472,7 +430,6 @@ export function buildBuiltinOverrideConfig(
 	if (draft.systemPromptMode !== base.systemPromptMode) override.systemPromptMode = draft.systemPromptMode;
 	if (draft.inheritProjectContext !== base.inheritProjectContext) override.inheritProjectContext = draft.inheritProjectContext;
 	if (draft.inheritSkills !== base.inheritSkills) override.inheritSkills = draft.inheritSkills;
-	if (draft.defaultContext !== base.defaultContext) override.defaultContext = draft.defaultContext ?? false;
 	if (draft.disabled !== base.disabled) override.disabled = draft.disabled ?? false;
 	if (draft.systemPrompt !== base.systemPrompt) override.systemPrompt = draft.systemPrompt;
 	if (!arraysEqual(draft.skills, base.skills)) override.skills = draft.skills ? [...draft.skills] : false;
@@ -576,7 +533,6 @@ function listMarkdownFilesRecursive(dir: string, predicate: (filePath: string) =
 function isAgentMarkdownFile(filePath: string): boolean {
 	const fileName = path.basename(filePath);
 	return fileName.endsWith(".md")
-		&& !fileName.endsWith(".chain.md")
 		&& !isAgentSkillsPath(filePath);
 }
 
@@ -649,11 +605,6 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 			: frontmatter.inheritSkills === "false"
 				? false
 				: defaultInheritSkills();
-		const defaultContext = frontmatter.defaultContext === "fork"
-			? "fork" as const
-			: frontmatter.defaultContext === "fresh"
-				? "fresh" as const
-				: undefined;
 
 		let extensions: string[] | undefined;
 		if (frontmatter.extensions !== undefined) {
@@ -688,7 +639,6 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 			systemPromptMode,
 			inheritProjectContext,
 			inheritSkills,
-			defaultContext,
 			systemPrompt: body,
 			source,
 			filePath,
@@ -708,27 +658,6 @@ function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 	}
 
 	return agents;
-}
-
-function loadChainsFromDir(dir: string, source: AgentSource): ChainConfig[] {
-	const chains: ChainConfig[] = [];
-
-	for (const filePath of listMarkdownFilesRecursive(dir, (fileName) => fileName.endsWith(".chain.md"))) {
-		let content: string;
-		try {
-			content = fs.readFileSync(filePath, "utf-8");
-		} catch {
-			continue;
-		}
-
-		try {
-			chains.push(parseChain(content, source, filePath));
-		} catch {
-			continue;
-		}
-	}
-
-	return chains;
 }
 
 function isDirectory(p: string): boolean {
@@ -755,16 +684,6 @@ function resolveNearestProjectAgentDirs(cwd: string): { readDirs: string[]; pref
 	};
 }
 
-function resolveNearestProjectChainDirs(cwd: string): { readDirs: string[]; preferredDir: string | null } {
-	const projectRoot = findNearestProjectRoot(cwd);
-	if (!projectRoot) return { readDirs: [], preferredDir: null };
-
-	const preferredDir = path.join(projectRoot, ".pi", "chains");
-	return {
-		readDirs: isDirectory(preferredDir) ? [preferredDir] : [],
-		preferredDir,
-	};
-}
 const BUILTIN_AGENTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "agents");
 
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
@@ -799,19 +718,14 @@ export function discoverAgentsAll(cwd: string): {
 	builtin: AgentConfig[];
 	user: AgentConfig[];
 	project: AgentConfig[];
-	chains: ChainConfig[];
 	userDir: string;
 	projectDir: string | null;
-	userChainDir: string;
-	projectChainDir: string | null;
 	userSettingsPath: string;
 	projectSettingsPath: string | null;
 } {
 	const userDirOld = path.join(getAgentDir(), "agents");
 	const userDirNew = path.join(os.homedir(), ".agents");
-	const userChainDir = getUserChainDir();
 	const { readDirs: projectDirs, preferredDir: projectDir } = resolveNearestProjectAgentDirs(cwd);
-	const { readDirs: projectChainDirs, preferredDir: projectChainDir } = resolveNearestProjectChainDirs(cwd);
 	const userSettingsPath = getUserAgentSettingsPath();
 	const projectSettingsPath = getProjectAgentSettingsPath(cwd);
 	const userSettings = readSubagentSettings(userSettingsPath);
@@ -836,18 +750,7 @@ export function discoverAgentsAll(cwd: string): {
 	}
 	const project = Array.from(projectMap.values());
 
-	const chainMap = new Map<string, ChainConfig>();
-	for (const dir of projectChainDirs) {
-		for (const chain of loadChainsFromDir(dir, "project")) {
-			chainMap.set(chain.name, chain);
-		}
-	}
-	const chains = [
-		...loadChainsFromDir(userChainDir, "user"),
-		...Array.from(chainMap.values()),
-	];
-
 	const userDir = process.env.PI_CODING_AGENT_DIR ? userDirOld : fs.existsSync(userDirNew) ? userDirNew : userDirOld;
 
-	return { builtin, user, project, chains, userDir, projectDir, userChainDir, projectChainDir, userSettingsPath, projectSettingsPath };
+	return { builtin, user, project, userDir, projectDir, userSettingsPath, projectSettingsPath };
 }

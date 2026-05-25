@@ -1,7 +1,7 @@
 {
   "name": "pi-subagents",
   "version": "0.25.0",
-  "description": "Pi extension for delegating tasks to subagents with chains, parallel execution, and TUI clarification",
+  "description": "Pi extension for delegating tasks to fresh-context subagents",
   "author": "Nico Bailon",
   "license": "MIT",
   "type": "module",
@@ -30,7 +30,6 @@
     "*.mjs",
     "agents/",
     "skills/**/*",
-    "prompts/**/*",
     "README.md",
     "CHANGELOG.md"
   ],
@@ -46,9 +45,6 @@
     ],
     "skills": [
       "./skills"
-    ],
-    "prompts": [
-      "./prompts"
     ]
   },
   "peerDependencies": {
@@ -68,7 +64,6 @@
     }
   },
   "dependencies": {
-    "@earendil-works/pi-tui": "^0.74.0",
     "jiti": "^2.7.0",
     "typebox": "^1.1.24"
   },

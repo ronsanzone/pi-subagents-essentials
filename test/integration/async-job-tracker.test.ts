@@ -165,7 +165,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 						agent: "reviewer",
 						status: "running",
 						currentTool: "read",
-						currentToolArgs: "src/tui/render.ts",
+						currentToolArgs: "src/core/async-job-tracker.ts",
 						recentTools: [{ tool: "grep", args: "async widget", endMs: Date.now() - 100 }],
 						recentOutput: ["reviewer line"],
 					},
@@ -189,7 +189,7 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			assert.deepEqual(job?.steps?.map((step: { index?: number }) => step.index), [1, 2]);
 			assert.deepEqual(job?.agents, ["reviewer", "auditor"]);
 			assert.equal(job?.steps?.[0]?.currentTool, "read");
-			assert.equal(job?.steps?.[0]?.currentToolArgs, "src/tui/render.ts");
+			assert.equal(job?.steps?.[0]?.currentToolArgs, "src/core/async-job-tracker.ts");
 			assert.deepEqual(job?.steps?.[0]?.recentTools?.map((tool: { tool: string; args: string }) => ({ tool: tool.tool, args: tool.args })), [{ tool: "grep", args: "async widget" }]);
 			assert.deepEqual(job?.steps?.[0]?.recentOutput, ["reviewer line"]);
 		} finally {
