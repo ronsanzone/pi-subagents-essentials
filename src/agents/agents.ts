@@ -535,7 +535,21 @@ export function removeBuiltinAgentOverride(cwd: string, name: string, scope: "us
 	return filePath;
 }
 
-function listMarkdownFilesRecursive(dir: string, predicate: (fileName: string) => boolean): string[] {
+function isAgentSkillsPath(filePath: string): boolean {
+	const normalized = filePath.split(path.sep).join("/");
+	const fileName = path.basename(filePath).toLowerCase();
+
+	// Agent Skills standard: SKILL.md files describe skills, not subagents.
+	if (fileName === "skill.md") return true;
+
+	// Claude/Agent Skills repository conventions. These trees may contain supporting
+	// Markdown references with frontmatter; none of them are subagent definitions.
+	return normalized.includes("/.agents/skills/")
+		|| normalized.includes("/.pi/skills/")
+		|| (normalized.includes("/.agents/marketplace/plugins/") && normalized.includes("/skills/"));
+}
+
+function listMarkdownFilesRecursive(dir: string, predicate: (filePath: string) => boolean): string[] {
 	const files: string[] = [];
 	if (!fs.existsSync(dir)) return files;
 
@@ -553,16 +567,23 @@ function listMarkdownFilesRecursive(dir: string, predicate: (fileName: string) =
 			continue;
 		}
 		if (!entry.isFile() && !entry.isSymbolicLink()) continue;
-		if (!predicate(entry.name)) continue;
+		if (!predicate(filePath)) continue;
 		files.push(filePath);
 	}
 	return files;
 }
 
+function isAgentMarkdownFile(filePath: string): boolean {
+	const fileName = path.basename(filePath);
+	return fileName.endsWith(".md")
+		&& !fileName.endsWith(".chain.md")
+		&& !isAgentSkillsPath(filePath);
+}
+
 function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig[] {
 	const agents: AgentConfig[] = [];
 
-	for (const filePath of listMarkdownFilesRecursive(dir, (fileName) => fileName.endsWith(".md") && !fileName.endsWith(".chain.md"))) {
+	for (const filePath of listMarkdownFilesRecursive(dir, isAgentMarkdownFile)) {
 		let content: string;
 		try {
 			content = fs.readFileSync(filePath, "utf-8");

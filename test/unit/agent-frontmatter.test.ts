@@ -595,6 +595,49 @@ Review
 });
 
 describe("project agent directory discovery", () => {
+	it("does not discover Agent Skills trees as subagents", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-agent-skills-"));
+		tempDirs.push(dir);
+
+		fs.mkdirSync(path.join(dir, ".agents", "agents"), { recursive: true });
+		fs.mkdirSync(path.join(dir, ".agents", "skills", "frontend-testing"), { recursive: true });
+		fs.mkdirSync(path.join(dir, ".agents", "marketplace", "plugins", "jira-tool", "skills", "jira-tool"), { recursive: true });
+		fs.mkdirSync(path.join(dir, ".pi", "skills", "project-skill"), { recursive: true });
+
+		fs.writeFileSync(path.join(dir, ".agents", "agents", "real-agent.md"), `---
+name: real-agent
+description: A real project subagent.
+---
+
+You are a real subagent.
+`, "utf-8");
+		fs.writeFileSync(path.join(dir, ".agents", "skills", "frontend-testing", "SKILL.md"), `---
+name: frontend-testing
+description: A skill, not a subagent.
+---
+
+# Frontend Testing
+`, "utf-8");
+		fs.writeFileSync(path.join(dir, ".agents", "marketplace", "plugins", "jira-tool", "skills", "jira-tool", "SKILL.md"), `---
+name: jira-tool
+description: Another skill, not a subagent.
+---
+
+# Jira Tool
+`, "utf-8");
+		fs.writeFileSync(path.join(dir, ".pi", "skills", "project-skill", "SKILL.md"), `---
+name: project-skill
+description: A project skill, not a subagent.
+---
+
+# Project Skill
+`, "utf-8");
+
+		const discovered = discoverAgentsAll(dir).project.map((agent) => agent.name).sort();
+
+		assert.deepEqual(discovered, ["real-agent"]);
+	});
+
 	it("discovers project agents from both .agents and .pi/agents", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-project-agent-dirs-"));
 		tempDirs.push(dir);
