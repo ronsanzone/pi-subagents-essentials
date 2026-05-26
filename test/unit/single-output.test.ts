@@ -11,7 +11,6 @@ import {
 	normalizeSingleOutputOverride,
 	resolveSingleOutput,
 	resolveSingleOutputPath,
-	validateFileOnlyOutputMode,
 } from "../../src/runs/shared/single-output.ts";
 
 const tempDirs: string[] = [];
@@ -140,14 +139,6 @@ describe("formatSavedOutputReference", () => {
 	});
 });
 
-describe("validateFileOnlyOutputMode", () => {
-	it("requires an output path for file-only mode", () => {
-		assert.match(validateFileOnlyOutputMode("file-only", undefined, "Single run") ?? "", /Single run sets outputMode: "file-only"/);
-		assert.equal(validateFileOnlyOutputMode("file-only", "/tmp/report.md", "Single run"), undefined);
-		assert.equal(validateFileOnlyOutputMode("inline", undefined, "Single run"), undefined);
-	});
-});
-
 describe("finalizeSingleOutput", () => {
 	it("formats saved-path messaging around the already-resolved output", () => {
 		const result = finalizeSingleOutput({
@@ -160,20 +151,6 @@ describe("finalizeSingleOutput", () => {
 
 		assert.match(result.displayOutput, /^\[TRUNCATED\]\nline 1/);
 		assert.match(result.displayOutput, /Output saved to:/);
-		assert.match(result.displayOutput, /3 lines/);
-	});
-
-	it("returns only the saved-output reference in file-only mode", () => {
-		const result = finalizeSingleOutput({
-			fullOutput: "line 1\nline 2\nline 3",
-			outputPath: "/tmp/review.md",
-			savedPath: "/tmp/review.md",
-			outputMode: "file-only",
-			exitCode: 0,
-		});
-
-		assert.doesNotMatch(result.displayOutput, /line 1/);
-		assert.match(result.displayOutput, /^Output saved to:/);
 		assert.match(result.displayOutput, /3 lines/);
 	});
 

@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { OutputMode, SavedOutputReference } from "../../shared/types.ts";
+import type { SavedOutputReference } from "../../shared/types.ts";
 
 export interface SingleOutputSnapshot {
 	exists: boolean;
@@ -64,13 +64,6 @@ export function formatSavedOutputReference(savedPath: string, fullOutput: string
 		lines,
 		message: `Output saved to: ${absolutePath} (${formatByteSize(bytes)}, ${lines} ${lines === 1 ? "line" : "lines"}). Read this file if needed.`,
 	};
-}
-
-export function validateFileOnlyOutputMode(outputMode: OutputMode | undefined, outputPath: string | undefined, context: string): string | undefined {
-	if (outputMode === "file-only" && !outputPath) {
-		return `${context} sets outputMode: "file-only" but does not configure an output file. Set output to a path or use outputMode: "inline".`;
-	}
-	return undefined;
 }
 
 export function captureSingleOutputSnapshot(outputPath: string | undefined): SingleOutputSnapshot | undefined {
@@ -141,7 +134,6 @@ export function finalizeSingleOutput(params: {
 	fullOutput: string;
 	truncatedOutput?: string;
 	outputPath?: string;
-	outputMode?: OutputMode;
 	exitCode: number;
 	savedPath?: string;
 	outputReference?: SavedOutputReference;
@@ -150,9 +142,6 @@ export function finalizeSingleOutput(params: {
 	let displayOutput = params.truncatedOutput || params.fullOutput;
 	if (params.exitCode === 0 && params.savedPath) {
 		const outputReference = params.outputReference ?? formatSavedOutputReference(params.savedPath, params.fullOutput);
-		if (params.outputMode === "file-only") {
-			return { displayOutput: outputReference.message, savedPath: params.savedPath, outputReference };
-		}
 		displayOutput += `\n\n${outputReference.message}`;
 		return { displayOutput, savedPath: params.savedPath, outputReference };
 	}

@@ -16,8 +16,6 @@ export interface MaxOutputConfig {
 	lines?: number;
 }
 
-export type OutputMode = "inline" | "file-only";
-
 export interface SavedOutputReference {
 	path: string;
 	bytes: number;
@@ -48,8 +46,7 @@ export interface TokenUsage {
 	total: number;
 }
 
-export type ActivityState = "active_long_running" | "needs_attention";
-export type SubagentResultStatus = "completed" | "failed" | "paused" | "detached";
+export type SubagentResultStatus = "completed" | "failed" | "detached";
 export type SubagentRunMode = "single" | "parallel";
 
 // ============================================================================
@@ -60,7 +57,6 @@ export interface AgentProgress {
 	index: number;
 	agent: string;
 	status: "pending" | "running" | "completed" | "failed" | "detached";
-	activityState?: ActivityState;
 	task: string;
 	skills?: string[];
 	lastActivityAt?: number;
@@ -122,7 +118,6 @@ export interface SingleResult {
 	artifactPaths?: ArtifactPaths;
 	truncation?: TruncationResult;
 	finalOutput?: string;
-	outputMode?: OutputMode;
 	savedOutputPath?: string;
 	outputReference?: SavedOutputReference;
 	outputSaveError?: string;
@@ -154,7 +149,7 @@ export interface Details {
 export interface ArtifactPaths {
 	inputPath: string;
 	outputPath: string;
-	jsonlPath: string;
+	jsonlPath?: string;
 	metadataPath: string;
 }
 
@@ -208,8 +203,6 @@ export interface RunSyncOptions {
 	sessionDir?: string;
 	sessionFile?: string;
 	outputPath?: string;
-	outputMode?: OutputMode;
-	maxSubagentDepth?: number;
 	/** Override the agent's default model (format: "provider/id" or just "id") */
 	modelOverride?: string;
 	/** Registry models available for heuristic bare-model resolution */
@@ -226,9 +219,18 @@ interface TopLevelParallelConfig {
 }
 
 export interface ExtensionConfig {
-	defaultSessionDir?: string;
-	maxSubagentDepth?: number;
+	agents?: {
+		disableBuiltins?: boolean;
+	};
+	artifacts?: {
+		enabled?: boolean;
+		cleanupDays?: number;
+	};
 	parallel?: TopLevelParallelConfig;
+	background?: {
+		runsDir?: string;
+		tailLines?: number;
+	};
 }
 
 // ============================================================================
@@ -307,7 +309,6 @@ export const MAX_CONCURRENCY = 4;
 export const TEMP_ROOT_DIR = path.join(os.tmpdir(), `pi-subagents-${resolveTempScopeId()}`);
 export const RESULTS_DIR = path.join(TEMP_ROOT_DIR, "subagent-results");
 export const TEMP_ARTIFACTS_DIR = path.join(TEMP_ROOT_DIR, "artifacts");
-export const DEFAULT_SUBAGENT_MAX_DEPTH = 2;
 export const SUBAGENT_ACTIONS = ["list", "get", "status", "doctor"] as const;
 
 function normalizeTopLevelParallelValue(value: unknown): number | undefined {
@@ -327,44 +328,6 @@ export function resolveTopLevelParallelConcurrency(
 	return normalizeTopLevelParallelValue(override)
 		?? normalizeTopLevelParallelValue(configValue)
 		?? MAX_CONCURRENCY;
-}
-
-// ============================================================================
-// Recursion Depth Guard
-// ============================================================================
-
-export function normalizeMaxSubagentDepth(value: unknown): number | undefined {
-	const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
-	if (!Number.isInteger(parsed) || parsed < 0) return undefined;
-	return parsed;
-}
-
-export function resolveCurrentMaxSubagentDepth(configMaxDepth?: number): number {
-	return normalizeMaxSubagentDepth(process.env.PI_SUBAGENT_MAX_DEPTH)
-		?? normalizeMaxSubagentDepth(configMaxDepth)
-		?? DEFAULT_SUBAGENT_MAX_DEPTH;
-}
-
-export function resolveChildMaxSubagentDepth(parentMaxDepth: number, agentMaxDepth?: number): number {
-	const normalizedParent = normalizeMaxSubagentDepth(parentMaxDepth) ?? DEFAULT_SUBAGENT_MAX_DEPTH;
-	const normalizedAgent = normalizeMaxSubagentDepth(agentMaxDepth);
-	return normalizedAgent === undefined ? normalizedParent : Math.min(normalizedParent, normalizedAgent);
-}
-
-export function checkSubagentDepth(configMaxDepth?: number): { blocked: boolean; depth: number; maxDepth: number } {
-	const depth = Number(process.env.PI_SUBAGENT_DEPTH ?? "0");
-	const maxDepth = resolveCurrentMaxSubagentDepth(configMaxDepth);
-	const blocked = Number.isFinite(depth) && depth >= maxDepth;
-	return { blocked, depth, maxDepth };
-}
-
-export function getSubagentDepthEnv(maxDepth?: number): Record<string, string> {
-	const parentDepth = Number(process.env.PI_SUBAGENT_DEPTH ?? "0");
-	const nextDepth = Number.isFinite(parentDepth) ? parentDepth + 1 : 1;
-	return {
-		PI_SUBAGENT_DEPTH: String(nextDepth),
-		PI_SUBAGENT_MAX_DEPTH: String(normalizeMaxSubagentDepth(maxDepth) ?? resolveCurrentMaxSubagentDepth()),
-	};
 }
 
 // ============================================================================

@@ -21,8 +21,8 @@ interface BuildPiArgsInput {
 	model?: string;
 	thinking?: string;
 	systemPromptMode?: "append" | "replace";
-	inheritProjectContext: boolean;
-	inheritSkills: boolean;
+	inheritProjectContext?: boolean;
+	inheritSkills?: boolean;
 	tools?: string[];
 	extensions?: string[];
 	systemPrompt?: string | null;

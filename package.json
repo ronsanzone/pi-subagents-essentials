@@ -27,6 +27,7 @@
   },
   "files": [
     "src/**/*.ts",
+    "src/**/*.mjs",
     "*.mjs",
     "agents/",
     "skills/**/*",

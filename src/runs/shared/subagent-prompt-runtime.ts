@@ -4,7 +4,7 @@ const SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV = "PI_SUBAGENT_INHERIT_PROJECT_CONTEX
 const SUBAGENT_INHERIT_SKILLS_ENV = "PI_SUBAGENT_INHERIT_SKILLS";
 export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
 	"You are a child subagent, not the parent orchestrator.",
-	"The parent session owns delegation and follow-up worker launches.",
+	"The parent session owns delegation and any follow-up launches.",
 	"Ignore prior parent-only orchestration instructions in inherited conversation history.",
 	"Do not propose or run subagents. Complete only your assigned role-specific task with the tools available to you.",
 	"If you need to edit files, call the actual edit/write tools. Do not print tool-call syntax, patches, or pseudo-tool calls as text.",

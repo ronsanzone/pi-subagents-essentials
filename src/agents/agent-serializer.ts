@@ -21,7 +21,6 @@ export const KNOWN_FIELDS = new Set([
 	"defaultReads",
 	"defaultProgress",
 	"interactive",
-	"maxSubagentDepth",
 	"completionGuard",
 ]);
 
@@ -67,9 +66,6 @@ export function serializeAgent(config: AgentConfig): string {
 
 	if (config.defaultProgress) lines.push("defaultProgress: true");
 	if (config.interactive) lines.push("interactive: true");
-	if (Number.isInteger(config.maxSubagentDepth) && config.maxSubagentDepth >= 0) {
-		lines.push(`maxSubagentDepth: ${config.maxSubagentDepth}`);
-	}
 	if (config.completionGuard === false) lines.push("completionGuard: false");
 
 	if (config.extraFields) {

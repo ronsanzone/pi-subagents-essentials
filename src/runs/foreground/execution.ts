@@ -21,7 +21,6 @@ import {
 	type Usage,
 	DEFAULT_MAX_OUTPUT,
 	truncateOutput,
-	getSubagentDepthEnv,
 } from "../../shared/types.ts";
 import {
 	getFinalOutput,
@@ -35,7 +34,7 @@ import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
-import { captureSingleOutputSnapshot, formatSavedOutputReference, resolveSingleOutput, validateFileOnlyOutputMode, type SingleOutputSnapshot } from "../shared/single-output.ts";
+import { captureSingleOutputSnapshot, formatSavedOutputReference, resolveSingleOutput, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
 	buildModelCandidates,
 	formatModelAttemptNote,
@@ -86,7 +85,7 @@ function snapshotProgress(progress: AgentProgress): AgentProgress {
 function snapshotResult(result: SingleResult, progress: AgentProgress): SingleResult {
 	return {
 		...result,
-		messages: result.outputMode === "file-only" && result.savedOutputPath ? undefined : result.messages ? [...result.messages] : undefined,
+		messages: result.messages ? [...result.messages] : undefined,
 		usage: { ...result.usage },
 		skills: result.skills ? [...result.skills] : undefined,
 		attemptedModels: result.attemptedModels ? [...result.attemptedModels] : undefined,
@@ -170,7 +169,7 @@ async function runSingleAttempt(
 		lastActivityAt: startTime,
 	};
 	result.progress = progress;
-	const spawnEnv = { ...process.env, ...sharedEnv, ...getSubagentDepthEnv(options.maxSubagentDepth) };
+	const spawnEnv = { ...process.env, ...sharedEnv };
 	let observedMutationAttempt = false;
 
 	const exitCode = await new Promise<number>((resolve) => {
@@ -345,7 +344,7 @@ async function runSingleAttempt(
 						ts: now,
 					}, mutatingFailureWindowMs);
 					if (shouldEscalateMutatingFailures(mutatingFailures, 3)) {
-						progress.activityState = "needs_attention";
+						progress.error = "Repeated mutating tool failures detected.";
 					}
 				} else if (toolSnapshot?.mutates) {
 					resetMutatingFailureState(mutatingFailures);
@@ -371,15 +370,17 @@ async function runSingleAttempt(
 			childExited = true;
 			clearFinalDrainTimers();
 		});
-		proc.on("close", (code, signal) => {
+		proc.on("close", async (code, signal) => {
 			clearFinalDrainTimers();
 			clearStdioGuard();
-			void jsonlWriter.close().catch(() => {
+			if (buf.trim()) processLine(buf);
+			try {
+				await jsonlWriter.close();
+			} catch {
 				// JSONL artifact flush is best effort.
-			});
+			}
 			cleanupTempDir(tempDir);
 			processClosed = true;
-			if (buf.trim()) processLine(buf);
 			if (!result.error && assistantError) result.error = assistantError;
 			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !result.error;
 			if (code !== 0 && stderrBuf.trim() && !result.error && !forcedDrainAfterFinalSuccess) {
@@ -388,12 +389,14 @@ async function runSingleAttempt(
 			const finalCode = forcedDrainAfterFinalSuccess ? 0 : forcedTerminationSignal || signal ? (code ?? 1) : (code ?? 0);
 			finish(finalCode);
 		});
-		proc.on("error", (error) => {
+		proc.on("error", async (error) => {
 			clearFinalDrainTimers();
 			clearStdioGuard();
-			void jsonlWriter.close().catch(() => {
+			try {
+				await jsonlWriter.close();
+			} catch {
 				// JSONL artifact flush is best effort.
-			});
+			}
 			cleanupTempDir(tempDir);
 			if (!result.error) {
 				result.error = error instanceof Error ? error.message : String(error);
@@ -469,10 +472,7 @@ async function runSingleAttempt(
 		}
 	}
 	artifactOutputByResult.set(result, fullOutput);
-	result.outputMode = options.outputMode ?? "inline";
-	result.finalOutput = options.outputMode === "file-only" && result.savedOutputPath && result.outputReference
-		? result.outputReference.message
-		: fullOutput;
+	result.finalOutput = fullOutput;
 	if (options.onUpdate) {
 		const finalText = result.finalOutput || result.error || "(no output)";
 		const progressSnapshot = snapshotProgress(progress);
@@ -510,19 +510,6 @@ export async function runSync(
 			error: `Unknown agent: ${agentName}`,
 		};
 	}
-	const outputModeValidationError = validateFileOnlyOutputMode(options.outputMode, options.outputPath, `Single run (${agentName})`);
-	if (outputModeValidationError) {
-		return {
-			agent: agentName,
-			task,
-			exitCode: 1,
-			messages: [],
-			usage: emptyUsage(),
-			outputMode: options.outputMode,
-			error: outputModeValidationError,
-		};
-	}
-
 	const sessionEnabled = Boolean(options.sessionFile || options.sessionDir);
 	const skillNames = options.skills ?? agent.skills ?? [];
 	const skillCwd = options.cwd ?? runtimeCwd;
@@ -559,13 +546,15 @@ export async function runSync(
 	let artifactPathsResult: ArtifactPaths | undefined;
 	let jsonlPath: string | undefined;
 	if (options.artifactsDir && options.artifactConfig?.enabled !== false) {
-		artifactPathsResult = getArtifactPaths(options.artifactsDir, options.runId, agentName, options.index);
+		const paths = getArtifactPaths(options.artifactsDir, options.runId, agentName, options.index);
+		const includeJsonl = options.artifactConfig?.includeJsonl === true;
+		artifactPathsResult = includeJsonl ? paths : { ...paths, jsonlPath: undefined };
 		ensureArtifactsDir(options.artifactsDir);
 		if (options.artifactConfig?.includeInput !== false) {
 			writeArtifact(artifactPathsResult.inputPath, `# Task for ${agentName}\n\n${task}`);
 		}
-		if (options.artifactConfig?.includeJsonl !== false) {
-			jsonlPath = artifactPathsResult.jsonlPath;
+		if (includeJsonl) {
+			jsonlPath = paths.jsonlPath;
 		}
 	}
 
@@ -637,20 +626,27 @@ export async function runSync(
 			writeArtifact(artifactPathsResult.outputPath, artifactOutputByResult.get(result) ?? result.finalOutput ?? "");
 		}
 		if (options.artifactConfig?.includeMetadata !== false) {
+			const completedAt = Date.now();
 			writeMetadata(artifactPathsResult.metadataPath, {
 				runId: options.runId,
+				mode: "single",
 				agent: agentName,
 				task,
+				index: options.index ?? 0,
+				cwd: options.cwd ?? runtimeCwd,
+				startedAt: completedAt - (result.progressSummary?.durationMs ?? 0),
+				completedAt,
+				durationMs: result.progressSummary?.durationMs,
 				exitCode: result.exitCode,
 				usage: result.usage,
 				model: result.model,
 				attemptedModels: result.attemptedModels,
 				modelAttempts: result.modelAttempts,
-				durationMs: result.progressSummary?.durationMs,
 				toolCount: result.progressSummary?.toolCount,
 				error: result.error,
 				skills: result.skills,
 				skillsWarning: result.skillsWarning,
+				paths: artifactPathsResult,
 				timestamp: Date.now(),
 			});
 		}

@@ -11,7 +11,7 @@ import { discoverAgents } from "../agents/agents.ts";
 import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { SubagentParams } from "./schemas.ts";
-import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
+import { createExecutor, type SubagentParamsLike } from "../runs/executor.ts";
 import { SUBAGENT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import { loadConfig } from "./config.ts";
 import {
@@ -81,6 +81,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	ensureAccessibleDir(RESULTS_DIR);
 	const config = loadConfig();
 	const tempArtifactsDir = getArtifactsDir(null);
+	const resolveArtifactsDir = (ctx: ExtensionContext): string => {
+		try {
+			return getArtifactsDir(ctx.sessionManager.getSessionFile() ?? null);
+		} catch {
+			return tempArtifactsDir;
+		}
+	};
 	cleanupAllArtifactDirs(DEFAULT_ARTIFACT_CONFIG.cleanupDays);
 
 	const state: SubagentState = {
@@ -92,12 +99,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const runtimeCleanup = () => {};
 	globalStore[runtimeCleanupStoreKey] = runtimeCleanup;
 
-	const executor = createSubagentExecutor({
+	const executor = createExecutor({
 		pi,
 		state,
 		config,
-		tempArtifactsDir,
-		getSubagentSessionRoot,
+		resolveArtifactsDir,
 		expandTilde,
 		discoverAgents,
 	});
@@ -123,6 +129,13 @@ MANAGEMENT:
 • { action: "status", id: "..." } - inspect a background run by exact id
 • { action: "doctor" } - read-only report`,
 		parameters: SubagentParams,
+
+		renderCall(params) {
+			if (params.action) return `subagent ${params.action}${params.agent ? ` ${params.agent}` : params.id ? ` ${params.id}` : ""}`;
+			if (params.background) return `subagent background ${params.agent ?? ""}`.trim();
+			if (Array.isArray(params.tasks)) return `subagent parallel (${params.tasks.length} tasks)`;
+			return `subagent ${params.agent ?? ""}`.trim();
+		},
 
 		execute(id, params, signal, onUpdate, ctx) {
 			return executeSubagentCollapsed(id, params, signal, onUpdate, ctx);
