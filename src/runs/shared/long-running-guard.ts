@@ -1,4 +1,8 @@
-import type { ResolvedControlConfig } from "../../shared/types.ts";
+interface ResolvedLongRunningConfig {
+	activeNoticeAfterMs: number;
+	activeNoticeAfterTurns?: number;
+	activeNoticeAfterTokens?: number;
+}
 
 interface LongRunningNoticeMetrics {
 	startedAt: number;
@@ -115,7 +119,7 @@ export function didMutatingToolFail(text: string): boolean {
 }
 
 export function nextLongRunningTrigger(
-	config: ResolvedControlConfig,
+	config: ResolvedLongRunningConfig,
 	metrics: LongRunningNoticeMetrics,
 ): LongRunningTriggerReason | undefined {
 	if (metrics.now - metrics.startedAt >= config.activeNoticeAfterMs) return "time_threshold";

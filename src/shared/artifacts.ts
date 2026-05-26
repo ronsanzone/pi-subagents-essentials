@@ -12,10 +12,9 @@ export function getArtifactsDir(sessionFile: string | null): string {
 	return TEMP_ARTIFACTS_DIR;
 }
 
-export function getArtifactPaths(artifactsDir: string, runId: string, agent: string, index?: number): ArtifactPaths {
-	const suffix = index !== undefined ? `_${index}` : "";
+export function getArtifactPaths(artifactsDir: string, runId: string, agent: string, index = 0): ArtifactPaths {
 	const safeAgent = agent.replace(/[^\w.-]/g, "_");
-	const base = `${runId}_${safeAgent}${suffix}`;
+	const base = `${runId}_${safeAgent}_${index}`;
 	return {
 		inputPath: path.join(artifactsDir, `${base}_input.md`),
 		outputPath: path.join(artifactsDir, `${base}_output.md`),

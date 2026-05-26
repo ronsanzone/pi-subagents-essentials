@@ -12,6 +12,7 @@ export const KNOWN_FIELDS = new Set([
 	"systemPromptMode",
 	"inheritProjectContext",
 	"inheritSkills",
+	// Deprecated/unsupported: consume without preserving or serializing.
 	"defaultContext",
 	"skill",
 	"skills",
@@ -20,7 +21,6 @@ export const KNOWN_FIELDS = new Set([
 	"defaultReads",
 	"defaultProgress",
 	"interactive",
-	"maxSubagentDepth",
 	"completionGuard",
 ]);
 
@@ -50,7 +50,6 @@ export function serializeAgent(config: AgentConfig): string {
 	lines.push(`systemPromptMode: ${config.systemPromptMode}`);
 	lines.push(`inheritProjectContext: ${config.inheritProjectContext ? "true" : "false"}`);
 	lines.push(`inheritSkills: ${config.inheritSkills ? "true" : "false"}`);
-	if (config.defaultContext) lines.push(`defaultContext: ${config.defaultContext}`);
 
 	const skillsValue = joinComma(config.skills);
 	if (skillsValue) lines.push(`skills: ${skillsValue}`);
@@ -67,9 +66,6 @@ export function serializeAgent(config: AgentConfig): string {
 
 	if (config.defaultProgress) lines.push("defaultProgress: true");
 	if (config.interactive) lines.push("interactive: true");
-	if (Number.isInteger(config.maxSubagentDepth) && config.maxSubagentDepth >= 0) {
-		lines.push(`maxSubagentDepth: ${config.maxSubagentDepth}`);
-	}
 	if (config.completionGuard === false) lines.push("completionGuard: false");
 
 	if (config.extraFields) {

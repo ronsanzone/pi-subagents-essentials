@@ -7,7 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { formatToolCall } from "./formatters.ts";
-import type { AgentProgress, AsyncStatus, Details, DisplayItem, ErrorInfo, SingleResult, ToolCallSummary } from "./types.ts";
+import type { AgentProgress, Details, DisplayItem, ErrorInfo, SingleResult, ToolCallSummary } from "./types.ts";
 
 // ============================================================================
 // File System Utilities
@@ -20,70 +20,9 @@ export function getAgentDir(): string {
 	return configured || path.join(os.homedir(), ".pi", "agent");
 }
 
-const statusCache = new Map<string, { mtime: number; status: AsyncStatus }>();
-
-function getErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
 export function resolveChildCwd(baseCwd: string, childCwd: string | undefined): string {
 	if (!childCwd) return baseCwd;
 	return path.isAbsolute(childCwd) ? childCwd : path.resolve(baseCwd, childCwd);
-}
-
-function isNotFoundError(error: unknown): boolean {
-	return typeof error === "object"
-		&& error !== null
-		&& "code" in error
-		&& (error as NodeJS.ErrnoException).code === "ENOENT";
-}
-
-/**
- * Read async job status from disk (with mtime-based caching)
- */
-export function readStatus(asyncDir: string): AsyncStatus | null {
-	const statusPath = path.join(asyncDir, "status.json");
-
-	let stat: fs.Stats;
-	try {
-		stat = fs.statSync(statusPath);
-	} catch (error) {
-		if (isNotFoundError(error)) return null;
-		throw new Error(`Failed to inspect async status file '${statusPath}': ${getErrorMessage(error)}`, {
-			cause: error instanceof Error ? error : undefined,
-		});
-	}
-
-	const cached = statusCache.get(statusPath);
-	if (cached && cached.mtime === stat.mtimeMs) {
-		return cached.status;
-	}
-
-	let content: string;
-	try {
-		content = fs.readFileSync(statusPath, "utf-8");
-	} catch (error) {
-		if (isNotFoundError(error)) return null;
-		throw new Error(`Failed to read async status file '${statusPath}': ${getErrorMessage(error)}`, {
-			cause: error instanceof Error ? error : undefined,
-		});
-	}
-
-	let status: AsyncStatus;
-	try {
-		status = JSON.parse(content) as AsyncStatus;
-	} catch (error) {
-		throw new Error(`Failed to parse async status file '${statusPath}': ${getErrorMessage(error)}`, {
-			cause: error instanceof Error ? error : undefined,
-		});
-	}
-
-	statusCache.set(statusPath, { mtime: stat.mtimeMs, status });
-	if (statusCache.size > 50) {
-		const firstKey = statusCache.keys().next().value;
-		if (firstKey) statusCache.delete(firstKey);
-	}
-	return status;
 }
 
 const outputTailCache = new Map<string, { mtime: number; size: number; lines: string[] }>();
